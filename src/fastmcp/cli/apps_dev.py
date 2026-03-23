@@ -1022,7 +1022,7 @@ def _build_picker_html(tools: list[dict[str, Any]]) -> str:
 
                 json_body: dict[str, Any] = {
                     "tool": name,
-                    "_json_args": Rx("_json_args"),
+                    "__json_args__": Rx("__json_args__"),
                 }
 
                 on_error = ShowToast(Rx("$error"), variant="error")  # type: ignore[arg-type]
@@ -1077,7 +1077,7 @@ def _build_picker_html(tools: list[dict[str, Any]]) -> str:
                                 ),
                             ):
                                 Textarea(
-                                    name="_json_args",
+                                    name="__json_args__",
                                     placeholder='{"key": "value"}',
                                     rows=8,
                                 )
@@ -1312,9 +1312,31 @@ def _make_dev_app(
         tool = data.pop("tool", "")
 
         # JSON mode: the entire argument dict arrives as a raw JSON string.
-        raw_json_args = data.pop("_json_args", None)
+        # Key uses a dunder prefix to avoid collisions with real tool params.
+        raw_json_args = data.pop("__json_args__", None)
         if raw_json_args is not None:
-            tool_args = json.loads(raw_json_args) if raw_json_args.strip() else {}
+            if not raw_json_args.strip():
+                tool_args = {}
+            else:
+                try:
+                    tool_args = json.loads(raw_json_args)
+                except json.JSONDecodeError as exc:
+                    return Response(
+                        content=json.dumps({"error": f"Invalid JSON: {exc}"}),
+                        status_code=400,
+                        media_type="application/json",
+                    )
+                if not isinstance(tool_args, dict):
+                    return Response(
+                        content=json.dumps(
+                            {
+                                "error": "JSON must be an object, not "
+                                + type(tool_args).__name__
+                            }
+                        ),
+                        status_code=400,
+                        media_type="application/json",
+                    )
         else:
             # Form mode: inputs are always strings — try to parse values
             # that look like JSON objects or arrays.
