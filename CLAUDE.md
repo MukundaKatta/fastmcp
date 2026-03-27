@@ -101,6 +101,14 @@ The handwritten notes are prepended above the auto-generated changelog and are t
 - Minor fixes: keep body short and concise
 - No "test plan" sections or testing summaries
 
+### Code Review Guidelines
+
+- **Fix causes, not symptoms.** When a PR works around a problem instead of addressing why it occurs, that's a red flag. A side-channel that compensates for a missing step adds permanent complexity. If the fix doesn't change the code path where the bug actually happens, ask why not.
+- Focus on API design and naming clarity
+- Identify confusing patterns (e.g., parameter values that contradict defaults) or non-idiomatic code (mutable defaults, etc.). Contributed code will need to be maintained indefinitely, and by someone other than the author (unless the author is a maintainer).
+- Suggest specific improvements, not generic "add more tests" comments
+- Think about API ergonomics from a user perspective
+
 ### Code Standards
 
 - Python ≥ 3.10 with full type annotations

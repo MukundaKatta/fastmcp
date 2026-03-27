@@ -36,6 +36,7 @@ If you do open a PR:
 - **Keep it focused.** One logical change per PR. Don't bundle unrelated fixes or refactors.
 - **Match existing patterns.** Follow the code style, type annotation conventions, and test patterns you see in the codebase. Run `uv run prek run --all-files` before submitting.
 - **Write tests.** Bug fixes should include a test that fails without the fix. Enhancements should include tests for the new behavior.
+- **Fix the cause, not the symptom.** If the bug is that a code path skips a step, the fix should make it stop skipping that step — not add compensation elsewhere. Workaround-style fixes will be sent back for revision.
 - **Don't submit generated boilerplate.** We review every line. PRs that read like unedited LLM output — verbose descriptions, speculative changes, shotgun-style fixes — will be closed.
 
 ## What we'll close without review
