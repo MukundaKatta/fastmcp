@@ -3,6 +3,8 @@
 import time
 from pathlib import Path
 
+import pytest
+
 from fastmcp import FastMCP
 from fastmcp.client import Client
 from fastmcp.server.providers import FileSystemProvider
@@ -15,6 +17,19 @@ class TestFileSystemProvider:
         """Provider should work with empty directory."""
         provider = FileSystemProvider(tmp_path)
         assert repr(provider).startswith("FileSystemProvider")
+
+    def test_provider_raises_on_missing_root(self, tmp_path: Path):
+        """Provider should raise FileNotFoundError for non-existent root."""
+        missing = tmp_path / "does_not_exist"
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            FileSystemProvider(missing)
+
+    def test_provider_raises_on_file_root(self, tmp_path: Path):
+        """Provider should raise NotADirectoryError when root is a file."""
+        file_path = tmp_path / "not_a_dir.py"
+        file_path.write_text("x = 1")
+        with pytest.raises(NotADirectoryError, match="not a directory"):
+            FileSystemProvider(file_path)
 
     def test_provider_discovers_tools(self, tmp_path: Path):
         """Provider should discover @tool decorated functions."""

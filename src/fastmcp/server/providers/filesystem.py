@@ -89,6 +89,14 @@ class FileSystemProvider(LocalProvider):
     ) -> None:
         super().__init__(on_duplicate="replace")
         self._root = Path(root).resolve()
+        if not self._root.exists():
+            raise FileNotFoundError(
+                f"FileSystemProvider root does not exist: {self._root}"
+            )
+        if not self._root.is_dir():
+            raise NotADirectoryError(
+                f"FileSystemProvider root is not a directory: {self._root}"
+            )
         self._reload = reload
         self._loaded = False
         # Track files we've warned about: path -> mtime when warned
@@ -102,10 +110,6 @@ class FileSystemProvider(LocalProvider):
 
     def _load_components(self) -> None:
         """Discover and register all components from the filesystem."""
-        # Clear existing components if reloading
-        if self._loaded:
-            self._components.clear()
-
         result = discover_and_import(self._root)
 
         # Log warnings for failed files (only once per file version)
@@ -125,6 +129,9 @@ class FileSystemProvider(LocalProvider):
         successful_files = {fp for fp, _ in result.components}
         for fp in successful_files:
             self._warned_files.pop(fp, None)
+
+        # Fresh dict (not .clear()) so in-flight iterators over the old dict aren't disrupted.
+        self._components = {}
 
         for file_path, component in result.components:
             try:
