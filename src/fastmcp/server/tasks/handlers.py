@@ -14,7 +14,12 @@ import mcp.types
 from mcp.shared.exceptions import McpError
 from mcp.types import INTERNAL_ERROR, ErrorData
 
-from fastmcp.server.dependencies import _current_docket, get_access_token, get_context
+from fastmcp.server.dependencies import (
+    _current_docket,
+    get_access_token,
+    get_context,
+    register_task_server,
+)
 from fastmcp.server.tasks.config import TaskMeta
 from fastmcp.server.tasks.keys import build_task_key
 from fastmcp.utilities.logging import get_logger
@@ -79,6 +84,12 @@ async def submit_to_docket(
                 message="Background tasks require a running FastMCP server context",
             )
         )
+
+    # Register the current server so background workers resolve
+    # CurrentFastMCP() / ctx.fastmcp to the correct (child) server
+    # for mounted tasks. At this point ctx.fastmcp is the child because
+    # we're inside the child's call_tool dispatch.
+    register_task_server(server_task_id, ctx.fastmcp)
 
     # Build full task key with embedded metadata
     task_key = build_task_key(session_id, server_task_id, task_type, key)
