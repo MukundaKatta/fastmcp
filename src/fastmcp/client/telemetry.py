@@ -24,30 +24,32 @@ def client_span(
     """
     tracer = get_tracer()
     with tracer.start_as_current_span(name, kind=SpanKind.CLIENT) as span:
-        attrs: dict[str, str] = {
-            # MCP semantic conventions
-            "mcp.method.name": method,
-            # FastMCP-specific attributes
-            "fastmcp.component.key": component_key,
-        }
-        if session_id is not None:
-            attrs["mcp.session.id"] = session_id
-        if resource_uri:
-            attrs["mcp.resource.uri"] = resource_uri
-        if tool_name is not None:
-            attrs["gen_ai.tool.name"] = tool_name
-        if prompt_name is not None:
-            attrs["gen_ai.prompt.name"] = prompt_name
-        span.set_attributes(attrs)
+        if span.is_recording():
+            attrs: dict[str, str] = {
+                # MCP semantic conventions
+                "mcp.method.name": method,
+                # FastMCP-specific attributes
+                "fastmcp.component.key": component_key,
+            }
+            if session_id is not None:
+                attrs["mcp.session.id"] = session_id
+            if resource_uri:
+                attrs["mcp.resource.uri"] = resource_uri
+            if tool_name is not None:
+                attrs["gen_ai.tool.name"] = tool_name
+            if prompt_name is not None:
+                attrs["gen_ai.prompt.name"] = prompt_name
+            span.set_attributes(attrs)
         try:
             yield span
         except Exception as e:
-            span.set_attribute(
-                "error.type",
-                "tool_error"
-                if type(e).__name__ == "ToolError"
-                else type(e).__name__,
-            )
+            if span.is_recording():
+                span.set_attribute(
+                    "error.type",
+                    "tool_error"
+                    if type(e).__qualname__ == "ToolError"
+                    else type(e).__qualname__,
+                )
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             raise

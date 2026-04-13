@@ -73,32 +73,34 @@ def server_span(
         context=_get_parent_trace_context(),
         kind=SpanKind.SERVER,
     ) as span:
-        attrs: dict[str, str] = {
-            # MCP semantic conventions
-            "mcp.method.name": method,
-            # FastMCP-specific attributes
-            "fastmcp.server.name": server_name,
-            "fastmcp.component.type": component_type,
-            "fastmcp.component.key": component_key,
-            **get_auth_span_attributes(),
-            **get_session_span_attributes(),
-        }
-        if resource_uri is not None:
-            attrs["mcp.resource.uri"] = resource_uri
-        if tool_name is not None:
-            attrs["gen_ai.tool.name"] = tool_name
-        if prompt_name is not None:
-            attrs["gen_ai.prompt.name"] = prompt_name
-        span.set_attributes(attrs)
+        if span.is_recording():
+            attrs: dict[str, str] = {
+                # MCP semantic conventions
+                "mcp.method.name": method,
+                # FastMCP-specific attributes
+                "fastmcp.server.name": server_name,
+                "fastmcp.component.type": component_type,
+                "fastmcp.component.key": component_key,
+                **get_auth_span_attributes(),
+                **get_session_span_attributes(),
+            }
+            if resource_uri is not None:
+                attrs["mcp.resource.uri"] = resource_uri
+            if tool_name is not None:
+                attrs["gen_ai.tool.name"] = tool_name
+            if prompt_name is not None:
+                attrs["gen_ai.prompt.name"] = prompt_name
+            span.set_attributes(attrs)
         try:
             yield span
         except Exception as e:
-            span.set_attribute(
-                "error.type",
-                "tool_error"
-                if type(e).__name__ == "ToolError"
-                else type(e).__name__,
-            )
+            if span.is_recording():
+                span.set_attribute(
+                    "error.type",
+                    "tool_error"
+                    if type(e).__qualname__ == "ToolError"
+                    else type(e).__qualname__,
+                )
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             raise
@@ -118,22 +120,24 @@ def delegate_span(
     """
     tracer = get_tracer()
     with tracer.start_as_current_span(f"delegate {name}") as span:
-        attrs: dict[str, str] = {
-            "fastmcp.provider.type": provider_type,
-            "fastmcp.component.key": component_key,
-        }
-        if method is not None:
-            attrs["mcp.method.name"] = method
-        span.set_attributes(attrs)
+        if span.is_recording():
+            attrs: dict[str, str] = {
+                "fastmcp.provider.type": provider_type,
+                "fastmcp.component.key": component_key,
+            }
+            if method is not None:
+                attrs["mcp.method.name"] = method
+            span.set_attributes(attrs)
         try:
             yield span
         except Exception as e:
-            span.set_attribute(
-                "error.type",
-                "tool_error"
-                if type(e).__name__ == "ToolError"
-                else type(e).__name__,
-            )
+            if span.is_recording():
+                span.set_attribute(
+                    "error.type",
+                    "tool_error"
+                    if type(e).__qualname__ == "ToolError"
+                    else type(e).__qualname__,
+                )
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             raise
