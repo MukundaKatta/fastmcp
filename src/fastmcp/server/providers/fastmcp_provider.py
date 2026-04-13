@@ -139,7 +139,9 @@ class FastMCPProviderTool(Tool):
         version = VersionSpec(eq=self.version) if self.version else None
 
         with delegate_span(
-            self._original_name or "", "FastMCPProvider", self._original_name or "",
+            self._original_name or "",
+            "FastMCPProvider",
+            self._original_name or "",
             method="tools/call",
         ):
             return await self._server.call_tool(
@@ -233,7 +235,9 @@ class FastMCPProviderResource(Resource):
         version = VersionSpec(eq=self.version) if self.version else None
 
         with delegate_span(
-            self._original_uri or "", "FastMCPProvider", self._original_uri or "",
+            self._original_uri or "",
+            "FastMCPProvider",
+            self._original_uri or "",
             method="resources/read",
         ):
             return await self._server.read_resource(
@@ -313,7 +317,9 @@ class FastMCPProviderPrompt(Prompt):
         version = VersionSpec(eq=self.version) if self.version else None
 
         with delegate_span(
-            self._original_name or "", "FastMCPProvider", self._original_name or "",
+            self._original_name or "",
+            "FastMCPProvider",
+            self._original_name or "",
             method="prompts/get",
         ):
             return await self._server.render_prompt(
@@ -433,7 +439,9 @@ class FastMCPProviderResourceTemplate(ResourceTemplate):
         version = VersionSpec(eq=self.version) if self.version else None
 
         with delegate_span(
-            original_uri, "FastMCPProvider", self._original_uri_template or "",
+            original_uri,
+            "FastMCPProvider",
+            self._original_uri_template or "",
             method="resources/read",
         ):
             return await self._server.read_resource(

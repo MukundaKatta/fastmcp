@@ -621,9 +621,7 @@ class FastMCP(
                 )
 
             # Core logic: list tools
-            with server_span(
-                "tools/list", "tools/list", self.name, "tool", ""
-            ):
+            with server_span("tools/list", "tools/list", self.name, "tool", ""):
                 # Get all tools, apply session transforms, then filter enabled
                 # and model-visible (app-only tools are hidden from the model).
                 tools = list(await super().list_tools())
@@ -1028,9 +1026,7 @@ class FastMCP(
                 )
 
             # Core logic: list prompts
-            with server_span(
-                "prompts/list", "prompts/list", self.name, "prompt", ""
-            ):
+            with server_span("prompts/list", "prompts/list", self.name, "prompt", ""):
                 # Get all prompts, apply session transforms, then filter enabled
                 prompts = list(await super().list_prompts())
                 prompts = await apply_session_transforms(prompts)
@@ -1224,7 +1220,11 @@ class FastMCP(
 
             # Core logic: find and execute tool
             with server_span(
-                f"tools/call {name}", "tools/call", self.name, "tool", name,
+                f"tools/call {name}",
+                "tools/call",
+                self.name,
+                "tool",
+                name,
                 tool_name=name,
             ) as span:
                 # Try normal display-name resolution first.
@@ -1527,7 +1527,11 @@ class FastMCP(
             # Core logic: find and render prompt (providers queried in parallel)
             # Use get_prompt to apply transforms and filter disabled
             with server_span(
-                f"prompts/get {name}", "prompts/get", self.name, "prompt", name,
+                f"prompts/get {name}",
+                "prompts/get",
+                self.name,
+                "prompt",
+                name,
                 prompt_name=name,
             ) as span:
                 prompt = await self.get_prompt(name, version=version)

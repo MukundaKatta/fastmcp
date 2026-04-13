@@ -70,8 +70,7 @@ class TestClientListToolsTracing:
             (
                 s
                 for s in tools_list_spans
-                if s.attributes is not None
-                and "fastmcp.server.name" in s.attributes
+                if s.attributes is not None and "fastmcp.server.name" in s.attributes
             ),
             None,
         )
