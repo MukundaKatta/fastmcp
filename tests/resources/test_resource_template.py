@@ -838,9 +838,7 @@ class TestMalformedURITemplates:
 
     def test_expand_uri_template_with_hyphens(self):
         """expand_uri_template maps underscored params to hyphenated placeholders."""
-        result = expand_uri_template(
-            "data://{user-id}/profile", {"user_id": "alice"}
-        )
+        result = expand_uri_template("data://{user-id}/profile", {"user_id": "alice"})
         assert result == "data://alice/profile"
 
     def test_query_param_does_not_clobber_path_param(self):
