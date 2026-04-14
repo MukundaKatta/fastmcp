@@ -104,7 +104,7 @@ class TestResourceTracing:
         assert len(spans) == 1
 
         span = spans[0]
-        assert span.name == "resources/read config://app"
+        assert span.name == "resources/read"
         assert span.kind == SpanKind.SERVER
         assert span.attributes is not None
         # Standard MCP semantic conventions
@@ -135,7 +135,7 @@ class TestResourceTracing:
         assert len(spans) == 1
 
         span = spans[0]
-        assert span.name == "resources/read users://123/profile"
+        assert span.name == "resources/read"
         assert span.kind == SpanKind.SERVER
         assert span.attributes is not None
         # Standard MCP semantic conventions
@@ -163,7 +163,7 @@ class TestResourceTracing:
         assert len(spans) == 1
 
         span = spans[0]
-        assert span.name == "resources/read nonexistent://resource"
+        assert span.name == "resources/read"
         assert span.status.status_code == StatusCode.ERROR
 
 

@@ -205,7 +205,7 @@ class ClientResourcesMixin:
         """
         uri_str = str(uri)
         with client_span(
-            f"resources/read {uri_str}",
+            "resources/read",
             "resources/read",
             uri_str,
             session_id=self.transport.get_session_id(),

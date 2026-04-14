@@ -238,7 +238,7 @@ class ProxyResource(Resource):
 
         backend_uri = self._backend_uri or str(self.uri)
         with client_span(
-            f"resources/read {backend_uri}",
+            "resources/read",
             "resources/read",
             backend_uri,
             resource_uri=backend_uri,

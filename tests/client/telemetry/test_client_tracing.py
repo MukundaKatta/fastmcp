@@ -128,8 +128,8 @@ class TestClientResourceTracing:
         spans = trace_exporter.get_finished_spans()
         span_names = [s.name for s in spans]
 
-        # Client should create "resources/read data://config" span
-        assert "resources/read data://config" in span_names
+        # Client should create "resources/read" span (URI in attributes, not name)
+        assert "resources/read" in span_names
 
     async def test_read_resource_span_attributes(
         self, trace_exporter: InMemorySpanExporter
@@ -151,7 +151,7 @@ class TestClientResourceTracing:
             (
                 s
                 for s in spans
-                if s.name.startswith("resources/read data://")
+                if s.name == "resources/read"
                 and s.attributes is not None
                 and "fastmcp.server.name" not in s.attributes
             ),
@@ -420,7 +420,7 @@ class TestClientErrorTracing:
             (
                 s
                 for s in spans
-                if s.name.startswith("resources/read data://fail")
+                if s.name == "resources/read"
                 and s.attributes is not None
                 and "fastmcp.server.name" not in s.attributes
             ),
@@ -431,7 +431,7 @@ class TestClientErrorTracing:
             (
                 s
                 for s in spans
-                if s.name.startswith("resources/read data://fail")
+                if s.name == "resources/read"
                 and s.attributes is not None
                 and "fastmcp.server.name" in s.attributes
             ),
