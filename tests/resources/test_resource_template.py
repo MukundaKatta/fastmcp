@@ -850,6 +850,19 @@ class TestMalformedURITemplates:
         assert result is not None
         assert result["user_id"] == "alice"
 
+    def test_from_function_rejects_hyphen_underscore_collision(self):
+        """Two raw param names that normalize to the same key are rejected."""
+
+        def handler(user_id: str) -> str:
+            return user_id
+
+        with pytest.raises(ValueError, match="both normalize to 'user_id'"):
+            ResourceTemplate.from_function(
+                fn=handler,
+                uri_template="test://{user-id}/{user_id}",
+                name="collision",
+            )
+
     def test_build_regex_still_works_for_valid_templates(self):
         regex = build_regex("test://{name}/{id}")
         assert regex is not None

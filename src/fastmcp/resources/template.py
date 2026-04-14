@@ -551,10 +551,25 @@ class FunctionResourceTemplate(ResourceTemplate):
                 )
 
         # Extract path and query parameters from URI template.
-        # Allow hyphens in names (RFC 6570) and normalize to underscores
-        # so they match Python function parameter names.
+        # Allow hyphens in names and normalize to underscores so they
+        # match Python function parameter names.
         raw_path_params = set(re.findall(r"{([\w-]+)(?:\*)?}", uri_template))
         raw_query_params = extract_query_params(uri_template)
+
+        # Detect collisions: two raw param names that normalize to the
+        # same Python identifier (e.g. {user-id} and {user_id}).
+        all_raw = raw_path_params | raw_query_params
+        seen: dict[str, str] = {}
+        for raw_name in sorted(all_raw):
+            normalized = raw_name.replace("-", "_")
+            if normalized in seen:
+                raise ValueError(
+                    f"URI template parameters '{seen[normalized]}' and "
+                    f"'{raw_name}' both normalize to '{normalized}'. "
+                    f"Use one or the other, not both."
+                )
+            seen[normalized] = raw_name
+
         path_params = {p.replace("-", "_") for p in raw_path_params}
         query_params = {p.replace("-", "_") for p in raw_query_params}
         all_uri_params = path_params | query_params
