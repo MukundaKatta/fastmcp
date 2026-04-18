@@ -68,6 +68,8 @@ from fastmcp.server.lifespan import Lifespan
 from fastmcp.server.low_level import LowLevelServer
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.mixins import LifespanMixin, MCPOperationsMixin, TransportMixin
+from fastmcp.server.plugins import Plugin
+from fastmcp.server.plugins.base import PluginError
 from fastmcp.server.providers import LocalProvider, Provider
 from fastmcp.server.providers.aggregate import AggregateProvider
 from fastmcp.server.tasks.config import TaskConfig, TaskMeta
@@ -185,16 +187,16 @@ def _get_auth_context() -> tuple[bool, Any]:
 def _is_model_visible(tool: Tool) -> bool:
     """Check whether a tool should be visible to the model.
 
-    Tools registered via ``@app.tool()`` (without ``model=True``) have
-    ``meta["ui"]["visibility"] == ["app"]`` — they are callable by app UIs
+    Tools registered via `@app.tool()` (without `model=True`) have
+    `meta["ui"]["visibility"] == ["app"]` — they are callable by app UIs
     but should not appear in the model's tool list.
 
     Returns True (visible) when:
-    - The tool has no ``meta.ui.visibility`` (normal tools).
-    - ``"model"`` is in the visibility list (e.g. ``["model"]`` or ``["app", "model"]``).
+    - The tool has no `meta.ui.visibility` (normal tools).
+    - `"model"` is in the visibility list (e.g. `["model"]` or `["app", "model"]`).
 
-    Returns False when the visibility list exists and does not contain ``"model"``
-    (e.g. ``["app"]``).
+    Returns False when the visibility list exists and does not contain `"model"`
+    (e.g. `["app"]`).
     """
     meta = tool.meta
     if not meta:
@@ -212,8 +214,8 @@ def _is_app_visible(tool: Tool) -> bool:
     """Check whether a tool has explicitly opted into app-callable visibility.
 
     Gates the dispatcher's hashed-name routing path: only tools whose
-    ``meta.ui.visibility`` list contains ``"app"`` can be reached via
-    ``<hash>_<local_name>`` calls. Tools without an explicit visibility
+    `meta.ui.visibility` list contains `"app"` can be reached via
+    `<hash>_<local_name>` calls. Tools without an explicit visibility
     declaration are NOT app-callable — they must be reached by their
     display name through the normal transform-aware resolution path.
 
@@ -295,6 +297,7 @@ class FastMCP(
         middleware: Sequence[Middleware] | None = None,
         providers: Sequence[Provider] | None = None,
         transforms: Sequence[Transform] | None = None,
+        plugins: Sequence[Plugin] | None = None,
         lifespan: LifespanCallable | Lifespan | None = None,
         tools: Sequence[Tool | Callable[..., Any]] | None = None,
         on_duplicate: DuplicateBehavior | None = None,
@@ -414,6 +417,33 @@ class FastMCP(
 
             self.middleware.append(DereferenceRefsMiddleware())
 
+        # Plugin registry: an ordered list, populated by `add_plugin()` and
+        # `plugins=[...]`. Setup and contribution collection happen during
+        # the server's lifespan startup (see `_run_plugin_setup_pass`).
+        self.plugins: list[Plugin] = []
+        # Plugins whose contributions (middleware/transforms/providers/routes)
+        # have been collected onto the server. Server contributions persist
+        # across lifespan cycles like server-authored middleware, so we
+        # don't re-install them on re-entry.
+        self._plugins_contributed: set[int] = set()
+        # Plugins whose setup() has completed successfully in the current
+        # lifespan cycle. Reset on teardown. Used to scope teardown to
+        # plugins that actually ran setup, so a partial-setup failure
+        # still triggers teardown for everything that was initialized.
+        self._plugins_set_up: set[int] = set()
+        # Per-plugin record of contributions we installed, stored as
+        # (container, item) tuples so we can reverse them when an
+        # ephemeral plugin is torn down.
+        self._plugin_contributions: dict[int, list[tuple[list[Any], Any]]] = {}
+        # True while the setup pass is executing. `add_plugin()` uses this
+        # to flag ephemeral plugins — plugins added from inside another
+        # plugin's setup() (the loader pattern). Ephemeral plugins are
+        # removed on teardown so loaders can freshly re-hydrate children
+        # on the next lifespan cycle without accumulating duplicates.
+        self._in_plugin_setup_pass: bool = False
+        for p in plugins or []:
+            self.add_plugin(p)
+
         # Set up MCP protocol handlers
         self._setup_handlers()
 
@@ -478,6 +508,182 @@ class FastMCP(
     def add_middleware(self, middleware: Middleware) -> None:
         self.middleware.append(middleware)
 
+    def add_plugin(self, plugin: Plugin) -> None:
+        """Register a plugin with this server.
+
+        Appends the plugin to the server's ordered plugin list and
+        synchronously collects its HTTP routes (see below). Middleware,
+        transforms, and providers are collected later, during the server's
+        startup sequence, because those hooks may reference state the
+        plugin populates during `setup()`.
+
+        HTTP routes are collected eagerly because HTTP transports snapshot
+        the server's route list when they construct the Starlette app —
+        which happens before the lifespan runs. A route returned by
+        `plugin.routes()` after the app is built would sit in
+        `_additional_http_routes` but never be mounted and would always
+        404. Collecting at registration time keeps non-loader plugins
+        working for HTTP transports.
+
+        Loader caveat: plugins added from inside another plugin's
+        `setup()` (the loader pattern) can still contribute middleware,
+        transforms, and providers, but their routes may not be reachable
+        over HTTP/SSE transports — those transports' route lists are
+        already fixed by the time `setup()` runs. Loaders that need to
+        contribute routes should use the stdio transport or expose the
+        routes via a non-loader plugin registered at construction time.
+
+        Raises:
+            PluginError: If called after the server has started, or if the
+                plugin's `fastmcp_version` compatibility check fails.
+
+        Args:
+            plugin: A :class:`Plugin` instance. Plugins are registered in
+                the order they are added; middleware is a stack.
+        """
+        if self._started.is_set():
+            raise PluginError(
+                f"Cannot add plugin {plugin.meta.name!r}: the server has "
+                "already started. Register plugins before the server binds."
+            )
+        plugin.check_fastmcp_compatibility()
+        # Compute routes up front so a failure inside plugin.routes() does
+        # not leave a half-registered plugin in self.plugins.
+        routes = list(plugin.routes())
+        self.plugins.append(plugin)
+        # Flag loader-added plugins as ephemeral so teardown can remove
+        # them along with their contributions. Written unconditionally so
+        # re-registering an instance that was previously marked ephemeral
+        # (added inside a setup pass and then cleaned up) as a permanent
+        # plugin clears the stale marker rather than inheriting it.
+        plugin._fastmcp_ephemeral = self._in_plugin_setup_pass
+        records = self._plugin_contributions.setdefault(id(plugin), [])
+        for route in routes:
+            self._additional_http_routes.append(route)
+            records.append((self._additional_http_routes, route))
+
+    async def _run_plugin_setup_pass(self) -> None:
+        """Run setup() on every registered plugin and collect contributions.
+
+        Called during server startup (from `_lifespan_manager`), before
+        the server binds. Iterates the plugin list in order, awaiting
+        `setup(server)` on each; plugins added during another plugin's
+        setup (the loader pattern) are picked up by the same loop because
+        the iteration advances against a live index.
+
+        Setup runs every lifespan cycle — plugins expect a matching
+        `setup`/`teardown` pair. Contribution collection is one-shot
+        per plugin: once a plugin's middleware/transforms/providers/routes
+        have been installed on the server they persist across cycles,
+        matching how server-authored middleware behaves.
+        """
+        # Setup pass: mutating-list iteration. New plugins appended by a
+        # plugin's setup() are picked up on subsequent iterations. We mark
+        # each plugin as "set up" only after setup() returns so that a
+        # partial-setup failure scopes teardown to plugins that actually
+        # completed initialization. The _in_plugin_setup_pass flag lets
+        # add_plugin() mark new plugins as ephemeral (see add_plugin).
+        self._in_plugin_setup_pass = True
+        try:
+            i = 0
+            while i < len(self.plugins):
+                plugin = self.plugins[i]
+                await plugin.setup(self)
+                self._plugins_set_up.add(id(plugin))
+                i += 1
+
+            # Contribution collection: run in registration order. Guarded
+            # per-plugin because contributions persist across lifespan
+            # cycles; new plugins (e.g. added by a loader during this
+            # cycle's setup) still get their contributions collected. Note:
+            # routes are collected synchronously at add_plugin() time
+            # because HTTP transports snapshot the route list before the
+            # lifespan runs.
+            for plugin in self.plugins:
+                if id(plugin) in self._plugins_contributed:
+                    continue
+                # Gather everything first: any hook that raises aborts
+                # before any server state is mutated, so a retry on the
+                # next lifespan cycle starts clean rather than appending
+                # duplicate middleware on top of partial contributions.
+                mws = list(plugin.middleware())
+                transforms_ = list(plugin.transforms())
+                providers_ = list(plugin.providers())
+
+                records = self._plugin_contributions.setdefault(id(plugin), [])
+                for mw in mws:
+                    self.add_middleware(mw)
+                    records.append((self.middleware, mw))
+                for transform in transforms_:
+                    self.add_transform(transform)
+                    records.append((self._transforms, transform))
+                for provider in providers_:
+                    # add_provider may wrap the value (for example a
+                    # FastMCP is wrapped in FastMCPProvider). Record
+                    # whatever actually landed in self.providers so
+                    # teardown can find it by identity.
+                    before = len(self.providers)
+                    self.add_provider(provider)
+                    for stored in self.providers[before:]:
+                        records.append((self.providers, stored))
+                self._plugins_contributed.add(id(plugin))
+        finally:
+            self._in_plugin_setup_pass = False
+
+    async def _run_plugin_teardown(self) -> None:
+        """Await `teardown()` on plugins whose setup() completed this cycle.
+
+        Iterates the plugin list in reverse registration order and only
+        tears down plugins that were successfully set up. This makes
+        teardown safe to register before `_run_plugin_setup_pass` — a
+        failure partway through setup still runs teardown for the plugins
+        that had already initialized.
+
+        Ephemeral plugins (those added from inside another plugin's
+        setup() by a loader) are removed from the server after teardown
+        runs, along with the contributions they installed. This keeps
+        loader plugins from accumulating duplicate children across
+        repeated lifespan cycles.
+        """
+        # Snapshot + clear first so that a slow teardown combined with a
+        # re-entry cannot double-count the set.
+        set_up = self._plugins_set_up
+        self._plugins_set_up = set()
+        for plugin in reversed(self.plugins):
+            if id(plugin) not in set_up:
+                continue
+            # Discard first so a plugin that appears twice in the list
+            # (same instance registered twice — see test_duplicates_allowed)
+            # only gets torn down once, even though its setup() ran once
+            # per list entry.
+            set_up.discard(id(plugin))
+            try:
+                await plugin.teardown()
+            except Exception:
+                logger.exception("Plugin %r raised during teardown", plugin.meta.name)
+
+        # Remove ephemeral plugins and their contributions. On the next
+        # lifespan cycle, the loader that produced them will freshly
+        # re-hydrate its children — without this cleanup, the plugin list
+        # and contribution registries would grow on every cycle.
+        ephemeral = [p for p in self.plugins if getattr(p, "_fastmcp_ephemeral", False)]
+        for plugin in ephemeral:
+            records = self._plugin_contributions.pop(id(plugin), [])
+            for container, item in reversed(records):
+                # Remove by identity rather than equality so a permanent
+                # contribution that happens to compare equal to `item`
+                # (e.g. a dataclass-style middleware with value-based
+                # `__eq__`) is not accidentally stripped. list.remove()
+                # uses `==`, which is the wrong matcher here.
+                for i, entry in enumerate(container):
+                    if entry is item:
+                        del container[i]
+                        break
+            self._plugins_contributed.discard(id(plugin))
+        self.plugins = [
+            p for p in self.plugins if not getattr(p, "_fastmcp_ephemeral", False)
+        ]
+
     def add_provider(self, provider: Provider, *, namespace: str = "") -> None:
         """Add a provider for dynamic tools, resources, and prompts.
 
@@ -497,10 +703,10 @@ class FastMCP(
     def _rewrite_prefab_uris(self, tools: list[Tool]) -> list[Tool]:
         """Replace placeholder Prefab URIs with per-tool hashed ones.
 
-        For each tool whose ``meta.ui.resourceUri`` is the placeholder,
-        reads the tool's stored hash from ``meta.fastmcp._tool_hash``
+        For each tool whose `meta.ui.resourceUri` is the placeholder,
+        reads the tool's stored hash from `meta.fastmcp._tool_hash`
         and rewrites the URI to the per-tool form. Also strips CSP from
-        tool meta (it belongs on the resource). Produces ``model_copy``
+        tool meta (it belongs on the resource). Produces `model_copy`
         views — originals are untouched.
         """
         from fastmcp.server.providers.prefab_synthesis import (
@@ -573,7 +779,7 @@ class FastMCP(
         """Add a tool transformation.
 
         .. deprecated::
-            Use ``add_transform(ToolTransform({...}))`` instead.
+            Use `add_transform(ToolTransform({...}))` instead.
         """
         if fastmcp.settings.deprecation_warnings:
             warnings.warn(
@@ -1569,7 +1775,7 @@ class FastMCP(
         """Remove tool(s) from the server.
 
         .. deprecated::
-            Use ``mcp.local_provider.remove_tool(name)`` instead.
+            Use `mcp.local_provider.remove_tool(name)` instead.
 
         Args:
             name: The name of the tool to remove.
@@ -2137,7 +2343,7 @@ class FastMCP(
         optionally with a given prefix.
 
         .. deprecated::
-            Use :meth:`mount` instead. ``import_server`` will be removed in a
+            Use :meth:`mount` instead. `import_server` will be removed in a
             future version.
 
         Note that when a server is *imported*, its objects are immediately
