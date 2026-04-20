@@ -11,12 +11,13 @@ from pydantic import Field
 
 from fastmcp.exceptions import NotFoundError
 from fastmcp.server.context import Context
-from fastmcp.server.transforms import GetToolNext
-from fastmcp.server.transforms.catalog import CatalogTransform
-from fastmcp.server.transforms.search.base import (
+from fastmcp.server.plugins.tool_search.base import (
     serialize_tools_for_output_json,
     serialize_tools_for_output_markdown,
 )
+from fastmcp.server.plugins.tool_search.bm25 import BM25SearchTransform
+from fastmcp.server.transforms import GetToolNext
+from fastmcp.server.transforms.catalog import CatalogTransform
 from fastmcp.tools.base import Tool, ToolResult
 from fastmcp.utilities.async_utils import is_coroutine_function
 from fastmcp.utilities.versions import VersionSpec
@@ -199,8 +200,6 @@ class Search:
         default_limit: int | None = None,
     ) -> None:
         if search_fn is None:
-            from fastmcp.server.transforms.search.bm25 import BM25SearchTransform
-
             _bm25 = BM25SearchTransform(max_results=default_limit or 50)
             search_fn = _bm25._search
         self._search_fn = search_fn

@@ -10,13 +10,16 @@ Clients use `search_tools` with a regex pattern to find relevant tools, then
 `call_tool` to execute them by name.
 
 Run with:
-    uv run python examples/search/server_regex.py
+    uv run python examples/tool_search/server_regex.py
 """
 
 from fastmcp import FastMCP
-from fastmcp.server.transforms.search import RegexSearchTransform
+from fastmcp.server.plugins.tool_search import ToolSearch, ToolSearchConfig
 
-mcp = FastMCP("Regex Search Demo")
+mcp = FastMCP(
+    "Regex Search Demo",
+    plugins=[ToolSearch(ToolSearchConfig(strategy="regex", max_results=3))],
+)
 
 
 # Register a variety of tools across different domains.
@@ -65,9 +68,8 @@ def to_uppercase(text: str) -> str:
     return text.upper()
 
 
-# Apply the regex search transform.
-# max_results limits how many tools a single search returns.
-mcp.add_transform(RegexSearchTransform(max_results=3))
+# The ToolSearch plugin is configured at server construction above —
+# nothing else to wire here.
 
 
 if __name__ == "__main__":
