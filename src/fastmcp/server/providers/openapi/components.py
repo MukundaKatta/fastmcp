@@ -20,7 +20,7 @@ from fastmcp.resources import (
     ResourceResult,
     ResourceTemplate,
 )
-from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.dependencies import get_call_http_headers, get_http_headers
 from fastmcp.server.tasks.config import TaskConfig
 from fastmcp.tools.base import Tool, ToolResult
 from fastmcp.utilities.logging import get_logger
@@ -195,6 +195,14 @@ class OpenAPITool(Tool):
                 for key, value in mcp_headers.items():
                     if key not in request.headers:
                         request.headers[key] = value
+
+            # Per-call HTTP headers override everything: client defaults,
+            # ambient MCP transport headers, and any auth baked into the
+            # request by the OpenAPI security scheme. The shared-instance
+            # multi-tenant case (issue #4025) demands per-caller auth wins.
+            call_headers = get_call_http_headers()
+            for key, value in call_headers.items():
+                request.headers[key] = value
         except Exception as e:
             raise ValueError(
                 f"Error building request for {self._route.method.upper()} "
@@ -308,13 +316,19 @@ class OpenAPIResource(Resource):
                     for param_name, param_value in path_params.items():
                         path = path.replace(f"{{{param_name}}}", str(param_value))
 
-            # Build headers with correct precedence
+            # Build headers with correct precedence:
+            #   client defaults < ambient MCP transport headers < per-call.
+            # Per-call (#4025) wins so per-tenant auth on a shared FastMCP
+            # instance can be injected at request time.
             headers: dict[str, str] = {}
             if self._client.headers:
                 headers.update(self._client.headers)
             mcp_headers = get_http_headers()
             if mcp_headers:
                 headers.update(mcp_headers)
+            call_headers = get_call_http_headers()
+            if call_headers:
+                headers.update(call_headers)
 
             response = await self._client.request(
                 method=self._route.method,

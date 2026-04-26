@@ -213,16 +213,28 @@ class MCPOperationsMixin:
         )
 
         try:
-            # Extract version and task metadata from request context.
-            # fn_key is set by call_tool() after finding the tool.
+            # Extract version, task metadata, and per-call HTTP headers from
+            # the request context. fn_key is set by call_tool() after finding
+            # the tool.
             version_str: str | None = None
             task_meta: TaskMeta | None = None
+            http_headers: dict[str, str] | None = None
             try:
                 ctx = server._mcp_server.request_context
-                # Extract version from _meta.fastmcp
+                # Extract version + per-call HTTP headers from _meta.fastmcp
                 if ctx.meta:
                     meta_dict = ctx.meta.model_dump(exclude_none=True)
-                    version_str = meta_dict.get("fastmcp", {}).get("version")
+                    fastmcp_meta = meta_dict.get("fastmcp") or {}
+                    version_str = fastmcp_meta.get("version")
+                    raw_headers = fastmcp_meta.get("http_headers")
+                    # Defensive: only forward if it parsed as a flat str->str
+                    # mapping. Anything else is silently dropped — we never
+                    # want a malformed _meta payload to crash the request.
+                    if isinstance(raw_headers, dict) and all(
+                        isinstance(k, str) and isinstance(v, str)
+                        for k, v in raw_headers.items()
+                    ):
+                        http_headers = dict(raw_headers)
                 # Extract SEP-1686 task metadata
                 if ctx.experimental.is_task:
                     mcp_task_meta = ctx.experimental.task_metadata
@@ -233,7 +245,11 @@ class MCPOperationsMixin:
 
             version = VersionSpec(eq=version_str) if version_str else None
             result = await server.call_tool(
-                key, arguments, version=version, task_meta=task_meta
+                key,
+                arguments,
+                version=version,
+                task_meta=task_meta,
+                http_headers=http_headers,
             )
 
             if isinstance(result, mcp.types.CreateTaskResult):

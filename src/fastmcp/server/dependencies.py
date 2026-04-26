@@ -63,6 +63,7 @@ __all__ = [
     "TaskContextSnapshot",
     "TokenClaim",
     "get_access_token",
+    "get_call_http_headers",
     "get_context",
     "get_http_headers",
     "get_http_request",
@@ -98,6 +99,15 @@ _current_server: ContextVar[weakref.ref[FastMCP] | None] = ContextVar(
 
 _current_docket: ContextVar[Docket | None] = ContextVar("docket", default=None)
 _current_worker: ContextVar[Worker | None] = ContextVar("worker", default=None)
+
+# Per-call HTTP headers injected by the caller of `FastMCP.call_tool(...,
+# http_headers=...)` (or extracted from `_meta.fastmcp.http_headers` on the
+# wire). Read by upstream HTTP integrations (e.g. OpenAPI) to apply
+# request-scoped auth without rebuilding the server. The default is an
+# empty dict so readers can always treat it as a mapping.
+_current_call_http_headers: ContextVar[dict[str, str]] = ContextVar(
+    "call_http_headers", default={}
+)
 
 
 # --- Docket availability check ---
@@ -462,6 +472,29 @@ def get_http_headers(
         return headers
     except RuntimeError:
         return {}
+
+
+def get_call_http_headers() -> dict[str, str]:
+    """Return per-call HTTP headers attached to the current tool/resource call.
+
+    Headers are populated when a caller invokes :meth:`FastMCP.call_tool` (or
+    related entry points) with the ``http_headers=`` keyword argument, or when
+    an MCP request includes ``_meta.fastmcp.http_headers``. Upstream HTTP
+    integrations (notably the OpenAPI provider) read this mapping to apply
+    request-scoped headers — typically auth — without reconstructing the
+    server.
+
+    Returns an empty dict when no per-call headers are attached so callers
+    can always treat the result as a mapping. Header *names* are returned
+    as the caller supplied them; integrations that need case-insensitive
+    matching should normalize themselves.
+
+    These headers are scoped to the current request via a ContextVar; they
+    do not leak across calls. They are intentionally distinct from
+    :func:`get_http_headers`, which returns the inbound MCP transport's
+    headers (and excludes ``Authorization`` by default — see #3262).
+    """
+    return dict(_current_call_http_headers.get())
 
 
 def get_access_token() -> AccessToken | None:

@@ -1140,6 +1140,7 @@ class FastMCP(
         version: VersionSpec | None = None,
         run_middleware: bool = True,
         task_meta: None = None,
+        http_headers: dict[str, str] | None = None,
     ) -> ToolResult: ...
 
     @overload
@@ -1151,6 +1152,7 @@ class FastMCP(
         version: VersionSpec | None = None,
         run_middleware: bool = True,
         task_meta: TaskMeta,
+        http_headers: dict[str, str] | None = None,
     ) -> mcp.types.CreateTaskResult: ...
 
     async def call_tool(
@@ -1161,6 +1163,7 @@ class FastMCP(
         version: VersionSpec | None = None,
         run_middleware: bool = True,
         task_meta: TaskMeta | None = None,
+        http_headers: dict[str, str] | None = None,
     ) -> ToolResult | mcp.types.CreateTaskResult:
         """Call a tool by name.
 
@@ -1175,6 +1178,14 @@ class FastMCP(
             task_meta: If provided, execute as a background task and return
                 CreateTaskResult. If None (default), execute synchronously and
                 return ToolResult.
+            http_headers: Optional per-call HTTP headers. Forwarded to upstream
+                HTTP integrations (e.g. the OpenAPI provider) for the duration
+                of this call only. Common case: per-tenant auth on a shared
+                FastMCP instance — pass ``{"Authorization": "Bearer ..."}``
+                here instead of constructing a new server per caller. Per-call
+                headers override defaults baked into the integration's HTTP
+                client. Scoped via ContextVar; do not leak across calls and
+                are not echoed back to the LLM.
 
         Returns:
             ToolResult when task_meta is None.
@@ -1189,6 +1200,7 @@ class FastMCP(
         # For mounted servers, the parent's provider sets fn_key to the
         # namespaced key before delegating, ensuring correct Docket routing.
 
+        from fastmcp.server.dependencies import _current_call_http_headers
         from fastmcp.server.providers.addressing import (
             parse_hashed_backend_name,
         )
@@ -1201,92 +1213,108 @@ class FastMCP(
         #   2. Display-name path — everything else. Goes through normal
         #      `get_tool` aggregation/transforms. Address is determined
         #      after resolution by walking the registry.
-        async with fastmcp.server.context.Context(fastmcp=self) as ctx:
-            if run_middleware:
-                mw_context = MiddlewareContext[CallToolRequestParams](
-                    message=mcp.types.CallToolRequestParams(
-                        name=name, arguments=arguments or {}
-                    ),
-                    source="client",
-                    type="request",
-                    method="tools/call",
-                    fastmcp_context=ctx,
-                )
-                return await self._run_middleware(
-                    context=mw_context,
-                    call_next=lambda context: self.call_tool(
-                        context.message.name,
-                        context.message.arguments or {},
-                        version=version,
-                        run_middleware=False,
-                        task_meta=task_meta,
-                    ),
-                )
 
-            # Core logic: find and execute tool
-            with server_span(
-                f"tools/call {name}",
-                "tools/call",
-                self.name,
-                "tool",
-                name,
-                tool_name=name,
-            ) as span:
-                # Try normal display-name resolution first.
-                tool: Tool | None = await self.get_tool(name, version=version)
+        # Bind per-call HTTP headers to the ContextVar for the duration of
+        # this call. Set unconditionally so nested re-entries (middleware
+        # calling self.call_tool) re-bind the same value rather than
+        # silently inheriting a parent's headers; reset on the way out.
+        headers_token = _current_call_http_headers.set(dict(http_headers or {}))
+        try:
+            async with fastmcp.server.context.Context(fastmcp=self) as ctx:
+                if run_middleware:
+                    mw_context = MiddlewareContext[CallToolRequestParams](
+                        message=mcp.types.CallToolRequestParams(
+                            name=name, arguments=arguments or {}
+                        ),
+                        source="client",
+                        type="request",
+                        method="tools/call",
+                        fastmcp_context=ctx,
+                    )
+                    return await self._run_middleware(
+                        context=mw_context,
+                        call_next=lambda context: self.call_tool(
+                            context.message.name,
+                            context.message.arguments or {},
+                            version=version,
+                            run_middleware=False,
+                            task_meta=task_meta,
+                            http_headers=http_headers,
+                        ),
+                    )
 
-                # If that fails, try hashed-name dispatch. This walks
-                # the provider tree recursively (same pattern as the old
-                # get_app_tool) looking for a tool whose stored hash
-                # matches the parsed prefix.
-                if tool is None:
-                    hashed = parse_hashed_backend_name(name)
-                    if hashed is not None:
-                        digest, local_name = hashed
-                        tool = await self.get_tool_by_hash(digest, local_name)
-                        if tool is not None:
-                            # Auth still applies on the bypass path.
-                            skip_auth, token = _get_auth_context()
-                            if not skip_auth and tool.auth is not None:
-                                try:
-                                    auth_ctx = AuthContext(token=token, component=tool)
-                                    if not await run_auth_checks(tool.auth, auth_ctx):
-                                        raise NotFoundError(f"Unknown tool: {name!r}")
-                                except AuthorizationError:
-                                    raise NotFoundError(
-                                        f"Unknown tool: {name!r}"
-                                    ) from None
+                # Core logic: find and execute tool
+                with server_span(
+                    f"tools/call {name}",
+                    "tools/call",
+                    self.name,
+                    "tool",
+                    name,
+                    tool_name=name,
+                ) as span:
+                    # Try normal display-name resolution first.
+                    tool: Tool | None = await self.get_tool(name, version=version)
 
-                if tool is None:
-                    raise NotFoundError(f"Unknown tool: {name!r}")
-                span.set_attributes(tool.get_span_attributes())
-                if task_meta is not None and task_meta.fn_key is None:
-                    task_meta = replace(task_meta, fn_key=tool.key)
-                try:
-                    return await tool._run(arguments or {}, task_meta=task_meta)
-                except FastMCPError:
-                    logger.exception(f"Error calling tool {name!r}")
-                    raise
-                except (ValidationError, PydanticValidationError):
-                    logger.exception(f"Error validating tool {name!r}")
-                    raise
-                except Exception as e:
-                    logger.exception(f"Error calling tool {name!r}")
-                    # Handle actionable errors that should reach the LLM
-                    # even when masking is enabled
-                    if isinstance(e, httpx.HTTPStatusError):
-                        if e.response.status_code == 429:
+                    # If that fails, try hashed-name dispatch. This walks
+                    # the provider tree recursively (same pattern as the old
+                    # get_app_tool) looking for a tool whose stored hash
+                    # matches the parsed prefix.
+                    if tool is None:
+                        hashed = parse_hashed_backend_name(name)
+                        if hashed is not None:
+                            digest, local_name = hashed
+                            tool = await self.get_tool_by_hash(digest, local_name)
+                            if tool is not None:
+                                # Auth still applies on the bypass path.
+                                skip_auth, token = _get_auth_context()
+                                if not skip_auth and tool.auth is not None:
+                                    try:
+                                        auth_ctx = AuthContext(
+                                            token=token, component=tool
+                                        )
+                                        if not await run_auth_checks(
+                                            tool.auth, auth_ctx
+                                        ):
+                                            raise NotFoundError(
+                                                f"Unknown tool: {name!r}"
+                                            )
+                                    except AuthorizationError:
+                                        raise NotFoundError(
+                                            f"Unknown tool: {name!r}"
+                                        ) from None
+
+                    if tool is None:
+                        raise NotFoundError(f"Unknown tool: {name!r}")
+                    span.set_attributes(tool.get_span_attributes())
+                    if task_meta is not None and task_meta.fn_key is None:
+                        task_meta = replace(task_meta, fn_key=tool.key)
+                    try:
+                        return await tool._run(arguments or {}, task_meta=task_meta)
+                    except FastMCPError:
+                        logger.exception(f"Error calling tool {name!r}")
+                        raise
+                    except (ValidationError, PydanticValidationError):
+                        logger.exception(f"Error validating tool {name!r}")
+                        raise
+                    except Exception as e:
+                        logger.exception(f"Error calling tool {name!r}")
+                        # Handle actionable errors that should reach the LLM
+                        # even when masking is enabled
+                        if isinstance(e, httpx.HTTPStatusError):
+                            if e.response.status_code == 429:
+                                raise ToolError(
+                                    "Rate limited by upstream API, please retry later"
+                                ) from e
+                        if isinstance(e, httpx.TimeoutException):
                             raise ToolError(
-                                "Rate limited by upstream API, please retry later"
+                                "Upstream request timed out, please retry"
                             ) from e
-                    if isinstance(e, httpx.TimeoutException):
-                        raise ToolError(
-                            "Upstream request timed out, please retry"
-                        ) from e
-                    # Standard masking logic
-                    if self._mask_error_details:
-                        raise ToolError(f"Error calling tool {name!r}") from e
-                    raise ToolError(f"Error calling tool {name!r}: {e}") from e
+                        # Standard masking logic
+                        if self._mask_error_details:
+                            raise ToolError(f"Error calling tool {name!r}") from e
+                        raise ToolError(f"Error calling tool {name!r}: {e}") from e
+        finally:
+            _current_call_http_headers.reset(headers_token)
 
     @overload
     async def read_resource(

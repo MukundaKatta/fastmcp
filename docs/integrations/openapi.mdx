@@ -68,6 +68,24 @@ mcp = FastMCP.from_openapi(
 )
 ```
 
+#### Per-call headers (multi-tenant)
+
+When one FastMCP instance is shared across callers — each with their own bearer token — auth can be injected at call time instead of being baked into the client. Pass `http_headers=` on `call_tool()` and the values are forwarded to the upstream HTTP request for that one call. Per-call values override anything set on the client.
+
+```python
+# One server, no auth on the client.
+mcp = FastMCP.from_openapi(openapi_spec=spec, client=httpx.AsyncClient(base_url=...))
+
+# Per-caller token, applied for this call only.
+result = await mcp.call_tool(
+    "search",
+    {"q": "alice"},
+    http_headers={"Authorization": f"Bearer {caller_token}"},
+)
+```
+
+The same headers can be supplied over the wire by setting `_meta.fastmcp.http_headers` on the tool call request. Per-call headers are scoped to a single call and never appear in the response sent back to the LLM.
+
 ## Route Mapping
 
 By default, FastMCP converts **every endpoint** in your OpenAPI specification into an MCP **Tool**. This provides a simple, predictable starting point that ensures all your API's functionality is immediately available to the vast majority of LLM clients which only support MCP tools.
